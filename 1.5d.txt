@@ -1,0 +1,327 @@
+#include "stm32f10x.h"
+#include "system.h"
+#include "stdlib.h"
+#include "critical.h"
+#include "event.h"
+#include "mail.h"
+#include "print_string.h"
+#include "string_op.h"
+
+static event_t s_tAppleEvent;
+static event_t s_tWorldEvent;
+static event_t s_tOrangeEvent;
+static print_str_item_t s_tArry[PRINT_SIZE];
+static check_str_item_t s_tCheckArry[CHECK_SIZE];
+#define Log(__STR)  \
+    do{       \
+        uint8_t *pchSTR = (__STR);  \
+        do{          \
+            while(!serial_out(*pchSTR)); \
+            pchSTR++;         \
+            if('\0' == *pchSTR){    \
+                break;    \
+            }   \
+        }while(1); \
+    }while(0)   
+
+void system_init(void)
+{
+    uart_init();
+    Key_gpio_init();
+    led_gpio_init();
+    INIT_EVENT(&s_tWorldEvent,false,false);
+    INIT_EVENT(&s_tAppleEvent,false,false);
+    INIT_EVENT(&s_tOrangeEvent,false,false);
+}
+
+static void set_led_gradation(uint16_t hwLevel)
+{
+    static uint16_t s_hwCounter = 0;
+    
+    if (hwLevel >= s_hwCounter) {
+        LED1_ON();
+    } else {
+        LED1_OFF();
+    }
+    s_hwCounter++;
+    s_hwCounter &= TOP;
+}
+
+static void breath_led(void)   
+{
+    static uint16_t s_hwCounter = 0;
+    static int16_t s_nGray = (TOP >> 1);
+    s_hwCounter++;
+    if (!(s_hwCounter & (_BV(10)-1))) {
+        s_nGray++; 
+        if (s_nGray == TOP) {
+            s_nGray = 0;
+        }
+    }
+    set_led_gradation(ABS(s_nGray - (TOP >> 1)));
+}
+
+
+#define TASK_A_RESET_FSM()  \
+    do{                    \
+        s_tState = START;  \
+    }while(0)
+static fsm_rt_t task_a(void)
+{
+    static enum {
+        START,
+        WAIT_EVENT,
+        CHECK_NULL,
+        PRINT
+    }s_tState = START;
+    static print_str_t * s_ptItem;
+    switch(s_tState){
+        case START:
+            s_tState = WAIT_EVENT;
+     //       break;
+        case WAIT_EVENT:
+            if(WAIT_EVENT(&s_tAppleEvent)){
+                s_tState = CHECK_NULL;
+            }
+            break;
+        case CHECK_NULL:
+            s_ptItem = new_print_str("apple\r\n");
+            if(NULL == s_ptItem){
+                s_tState = CHECK_NULL;
+            }else{
+//                print_str_init(s_ptItem,"apple\r\n");
+                s_tState = PRINT;
+            }
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == s_ptItem->print(s_ptItem)){
+                delete_print_str(s_ptItem);
+                TASK_A_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define TASK_B_RESET_FSM()  \
+    do{                    \
+        s_tState = START;  \
+    }while(0)
+static fsm_rt_t task_b(void)
+{
+    static enum {
+        START,
+        WAIT_EVENT,
+        CHECK_NULL,
+        PRINT
+    }s_tState = START;
+    static print_str_t * s_ptItem;
+    switch(s_tState){
+        case START:
+            s_tState = WAIT_EVENT;
+ //           break;
+        case WAIT_EVENT:
+            if(WAIT_EVENT(&s_tOrangeEvent)){
+                s_tState = CHECK_NULL;
+            }            
+            break;
+        case CHECK_NULL:
+            s_ptItem = new_print_str("orange\r\n");
+            if(NULL == s_ptItem){
+                s_tState = CHECK_NULL;
+            }else{
+                s_tState = PRINT;
+//                print_str_init(s_ptItem,"orange\r\n");
+            }
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == s_ptItem->print(s_ptItem)){
+                delete_print_str(s_ptItem);
+                TASK_B_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+
+#define TASK_C_RESET_FSM()  \
+    do{                    \
+        s_tState = START;  \
+    }while(0)
+static fsm_rt_t task_c(void)
+{
+    static enum {
+        START,
+        WAIT_EVENT,
+        CHECK_NULL,
+        PRINT
+    }s_tState = START;
+    static print_str_t * s_ptItem;
+    switch(s_tState){
+        case START:
+            s_tState = WAIT_EVENT;
+ //           break;
+        case WAIT_EVENT:
+            if(WAIT_EVENT(&s_tWorldEvent)){
+                s_tState = CHECK_NULL;
+            }            
+            break;
+        case CHECK_NULL:
+            s_ptItem = new_print_str("world\r\n");
+            if(NULL == s_ptItem){
+                s_tState = CHECK_NULL;
+            }else{
+                s_tState = PRINT;
+        //        print_str_init(s_ptItem,"world\r\n");
+            }
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == s_ptItem->print(s_ptItem)){
+                delete_print_str(s_ptItem);
+                TASK_B_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+
+#define CHECK_WORLD_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+fsm_rt_t check_world(uint8_t chByte,check_str_t * ptCheck)
+{
+    static enum{
+        START = 0,
+        CHECK_STRING,        
+    }s_tState = START;
+    switch(s_tState){
+        case START:
+            if(NULL == ptCheck){
+                break;
+            }
+            s_tState = CHECK_STRING;
+            init_check_string(ptCheck,"world");
+//            break;
+        case CHECK_STRING:
+            if(fsm_rt_cpl == check_string(ptCheck,chByte)){
+                SET_EVENT(&s_tWorldEvent);
+                CHECK_WORLD_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;    
+}
+
+#define CHECK_ORANGE_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+fsm_rt_t check_orange(uint8_t chByte,check_str_t * ptCheck)
+{
+    static enum{
+        START = 0,
+        CHECK_STRING,
+    }s_tState = START; 
+    switch(s_tState){
+        case START:
+            if(NULL == ptCheck){
+                break;
+            }
+            s_tState = CHECK_STRING;
+            init_check_string(ptCheck,"orange");
+//            break;
+        case CHECK_STRING:
+            if(fsm_rt_cpl == check_string(ptCheck,chByte)){
+               SET_EVENT(&s_tOrangeEvent);
+               CHECK_ORANGE_RESET_FSM();
+               return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define CHECK_APPLE_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+fsm_rt_t check_apple(uint8_t chByte,check_str_t * ptCheck)
+{
+    static enum{
+        START = 0,
+        CHECK_STRING,
+    }s_tState = START; 
+    switch(s_tState){
+        case START:
+            if(NULL == ptCheck){
+                break;
+            }
+            s_tState = CHECK_STRING;
+            init_check_string(ptCheck,"apple");
+//            break;
+        case CHECK_STRING:
+            if(fsm_rt_cpl == check_string(ptCheck,chByte)){
+                SET_EVENT(&s_tAppleEvent);
+                CHECK_APPLE_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define CHECK_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+fsm_rt_t check_task(void)
+{
+    static enum{
+        START = 0,
+        GET_CHAR,
+    }s_tState = START; 
+    static check_str_t * s_ptAppleItem;
+    static check_str_t * s_ptOrangeItem;
+    static check_str_t * s_ptWorldItem;
+    uint8_t chByte;
+    switch(s_tState){
+        case START:
+            s_ptAppleItem = check_str_new();
+            s_ptOrangeItem = check_str_new();
+            s_ptWorldItem = check_str_new();
+            s_tState = GET_CHAR;
+            break;
+        case GET_CHAR:
+            if(serial_in(&chByte)){
+                check_orange(chByte,s_ptOrangeItem);
+                check_apple(chByte,s_ptAppleItem);
+                check_world(chByte,s_ptWorldItem);                
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+
+int main(void)
+{
+    system_init();
+    print_init_heap(s_tArry,sizeof(s_tArry));
+    check_init_heap(s_tCheckArry,sizeof(s_tCheckArry));
+    while(1){
+        breath_led();
+        check_task();
+        task_a();
+        task_b();
+        task_c();
+    }
+}
+
+

@@ -1,0 +1,682 @@
+#include "stm32f10x.h"
+#include "system.h"
+#include "stdlib.h"
+#include "critical.h"
+#include "event.h"
+#include "mail.h"
+#include "queue.h"
+//#include "print_string.h"
+//#include "string_op.h"
+
+DEF_CLASS(print_str_t)
+    uint8_t chState;
+    uint8_t * pchStr;   //×Ö·û´®Ö¸Õë
+END_DEF_CLASS(print_str_t)
+
+DEF_CLASS(check_str_t)
+    uint8_t chState;
+    uint8_t * pchStr;
+    uint8_t chCount;
+    byte_queue_t *ptQueue;
+END_DEF_CLASS(check_str_t)
+
+static byte_queue_t s_tFIFOin;
+static byte_queue_t s_tFIFOout;
+
+static uint8_t s_chInBuffer[16] = {0};
+static uint8_t s_chOutBuffer[16] = {0};
+static event_t s_tAppleEvent;
+static event_t s_tWorldEvent;
+static event_t s_tOrangeEvent;
+
+#define CHECK_STRING_RESET_FSM()      \
+    do {\
+        ptThis->chState = 0;\
+    } while(0);
+fsm_rt_t check_string(check_str_t *ptThis,bool *pbIsRequestDrop)
+{
+    enum{
+        START = 0,
+        CHECK_NULL,
+        CHECK_TAIL,
+        CHECK_CHAR,
+    };    
+    static uint8_t s_chByte;
+    if((NULL == ptThis) &&(NULL == pbIsRequestDrop)){
+        return fsm_rt_err;
+    }
+    switch(ptThis->chState){
+        case START:
+            ptThis->chCount = 0;
+            *pbIsRequestDrop = false;
+            ptThis->chState = CHECK_NULL;
+        case CHECK_NULL:	
+            while(PEEK_BYTE_QUEUE(ptThis->ptQueue,&s_chByte)){		
+                if(s_chByte != ptThis->pchStr[ptThis->chCount]){
+                    *pbIsRequestDrop = true;  //±íÊ¾Òª¶ªÆúµÄ×Ö·û
+                    //CHECK_STRING_RESET_FSM();
+                    break;
+                }
+                //
+                ptThis->chCount++;
+                if('\0' == ptThis->pchStr[ptThis->chCount]){
+                    CHECK_STRING_RESET_FSM();
+                    return fsm_rt_cpl;
+                }
+            }
+            CHECK_STRING_RESET_FSM();
+    }  
+    return fsm_rt_on_going;
+}
+
+bool printf_string_init(print_str_t * ptThis,uint8_t *pchStr)
+{
+    if((NULL == ptThis)||(NULL == pchStr)){
+        return false;
+    }
+    ptThis->chState = 0;
+    ptThis->pchStr = pchStr;
+    return true;
+}
+
+bool init_check_string(check_str_t *ptThis,uint8_t *pchStr)
+{
+    if((NULL == ptThis)||(NULL == pchStr)){
+        return false;
+    }
+    ptThis->chState = 0;
+    ptThis->chCount = 0;
+    ptThis->pchStr = pchStr;
+	ptThis->ptQueue = &s_tFIFOin;
+    return true;
+}
+
+void system_init(void)
+{
+    uart_init();
+    Key_gpio_init();
+    led_gpio_init();
+    INIT_EVENT(&s_tWorldEvent,false,false);
+    INIT_EVENT(&s_tAppleEvent,false,false);
+    INIT_EVENT(&s_tOrangeEvent,false,false);
+}
+
+static void set_led_gradation(uint16_t hwLevel)
+{
+    static uint16_t s_hwCounter = 0;
+    
+    if (hwLevel >= s_hwCounter) {
+        LED1_ON();
+    } else {
+        LED1_OFF();
+    }
+    s_hwCounter++;
+    s_hwCounter &= TOP;
+}
+
+static void breath_led(void)   //???
+{
+    static uint16_t s_hwCounter = 0;
+    static int16_t s_nGray = (TOP >> 1);
+    s_hwCounter++;
+    if (!(s_hwCounter & (_BV(10)-1))) {
+        s_nGray++; 
+        if (s_nGray == TOP) {
+            s_nGray = 0;
+        }
+    }
+    set_led_gradation(ABS(s_nGray - (TOP >> 1)));
+}
+
+
+#define PRINT_STRING_RESET_FSM()  \
+    do{  \
+        ptThis->chState = START;   \
+    }while(0)
+static fsm_rt_t printf_string(print_str_t * ptThis)
+{
+    enum {
+        START,
+        CHECK_TAIL,
+        PRINT
+    }; 
+    if(ptThis == NULL){
+        return fsm_rt_err;
+    }
+    switch(ptThis->chState){
+        case START:
+            ptThis->chState = CHECK_TAIL;
+        //  break;
+        case CHECK_TAIL:
+            if(*ptThis->pchStr == '\0'){
+                PRINT_STRING_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+       //   break;
+        case PRINT:
+            if(ENQUEUE_BYTE(&s_tFIFOout,*ptThis->pchStr)){
+                ptThis->pchStr++;
+                ptThis->chState = CHECK_TAIL;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define PRINT_APPLE_RESET_FSM()  \
+    do{  \
+        s_tState = START;   \
+    }while(0)
+static fsm_rt_t print_Apple(void)
+{
+    static enum {
+        START,
+        PRINT
+    }s_tState = START; 
+    static print_str_t s_tApple;
+    switch(s_tState){
+        case START:
+            printf_string_init(&s_tApple,"apple\r\n");
+            s_tState = PRINT;
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == printf_string(&s_tApple)){	
+                PRINT_APPLE_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define PRINT_ORANGE_RESET_FSM()  \
+    do{                    \
+        s_tState = START;  \
+    }while(0)
+static fsm_rt_t print_Orange(void)
+{
+    static enum {
+        START,
+        PRINT
+    }s_tState = START;
+    static print_str_t s_tOrange;
+    switch(s_tState){
+        case START:
+            printf_string_init(&s_tOrange,"orange\r\n");
+            s_tState = PRINT;
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == printf_string(&s_tOrange)){
+                PRINT_ORANGE_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define PRINT_WORLD_RESET_FSM()  \
+    do{                    \
+        s_tState = START;  \
+    }while(0)
+static fsm_rt_t print_World(void)
+{
+    static enum {
+        START,
+        PRINT
+    }s_tState = START;
+    static print_str_t s_tWorld;
+    switch(s_tState){
+        case START:
+            printf_string_init(&s_tWorld,"world\r\n");
+            s_tState = PRINT;
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == printf_string(&s_tWorld)){
+                PRINT_ORANGE_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define TASK_A_RESET_FSM()  \
+    do{                    \
+        s_tState = START;  \
+    }while(0)
+static fsm_rt_t task_a(void)
+{
+    static enum {
+        START,
+        WAIT_EVENT,
+        PRINT
+    }s_tState = START;
+    switch(s_tState){
+        case START:
+            s_tState = WAIT_EVENT;
+     //       break;
+        case WAIT_EVENT:
+            if(WAIT_EVENT(&s_tAppleEvent)){
+                s_tState = PRINT;
+            }
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == print_Apple()){
+                TASK_A_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define TASK_B_RESET_FSM()  \
+    do{                    \
+        s_tState = START;  \
+    }while(0)
+static fsm_rt_t task_b(void)
+{
+    static enum {
+        START,
+        WAIT_EVENT,
+        PRINT
+    }s_tState = START;
+    switch(s_tState){
+        case START:
+            s_tState = WAIT_EVENT;
+ //           break;
+        case WAIT_EVENT:
+            if(WAIT_EVENT(&s_tOrangeEvent)){
+                s_tState = PRINT;
+            }            
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == print_Orange()){
+                TASK_B_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+#define TASK_C_RESET_FSM()  \
+    do{                    \
+        s_tState = START;  \
+    }while(0)
+static fsm_rt_t task_c(void)
+{
+    static enum {
+        START,
+        WAIT_EVENT,
+        PRINT
+    }s_tState = START;
+    switch(s_tState){
+	case START:
+        s_tState = WAIT_EVENT;
+ //       break;
+    case WAIT_EVENT:
+        if(WAIT_EVENT(&s_tWorldEvent)){
+            s_tState = PRINT;
+        }            
+        break;
+    case PRINT:
+        if(fsm_rt_cpl == print_World()){
+            TASK_C_RESET_FSM();
+            return fsm_rt_cpl;
+        }
+        break;
+    }
+    return fsm_rt_on_going;
+}
+fsm_rt_t serial_out_task(void)
+{
+#define SERIAL_OUT_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+
+    static enum{
+        START = 0,
+        WAIT_BYTE,
+        OUTPUT,
+    }s_tState = START;    
+    static uint8_t s_chChar = 0;
+    switch(s_tState) {
+        case START:
+            s_tState = WAIT_BYTE;
+//             break;       
+        case WAIT_BYTE:          
+            if(DEQUEUE_BYTE(&s_tFIFOout, &s_chChar)) {    
+                s_tState = OUTPUT; 
+            } 
+             break;           
+        case OUTPUT:
+            if(serial_out(s_chChar)) {            
+                SERIAL_OUT_TASK_RESET_FSM();
+                return fsm_rt_cpl;               
+            }        
+    }    
+    return fsm_rt_on_going;
+}
+
+
+fsm_rt_t serial_in_task(void)
+{
+#define SERIAL_IN_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+
+    static enum{
+        START = 0,
+        INPUT,
+    }s_tState = START;    
+    uint8_t chChar = 0;    
+    switch(s_tState) {
+        case START:
+            s_tState = INPUT;
+//             break;        
+        case INPUT:          
+            if(serial_in(&chChar)) {      
+                ENQUEUE_BYTE(&s_tFIFOin, chChar);
+                SERIAL_IN_TASK_RESET_FSM();
+                return fsm_rt_cpl;               
+            }
+    }   
+    return fsm_rt_on_going;
+}
+
+/*#define CHECK_HELLO_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+static fsm_rt_t check_hello(byte_queue_t *ptQueue, bool *bIsRequestDrop)
+{
+    static enum{
+        START = 0,
+        CHECK,
+    }s_tState = START;
+    static check_str_t s_tHello;
+    if((NULL == ptQueue) && (NULL == bIsRequestDrop)){
+        return fsm_rt_err;
+    }
+    switch(s_tState){
+        case START:
+            init_check_string(&s_tHello,"hello");
+            s_tState = CHECK;
+            break;
+        case CHECK:
+	    if(fsm_rt_cpl == check_string(&s_tHello,bIsRequestDrop)){
+                SET_EVENT(&s_tWorldEvent);
+                CHECK_HELLO_TASK_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+}
+
+#define CHECK_APPLE_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+static fsm_rt_t check_apple(byte_queue_t *ptQueue, bool *bIsRequestDrop)
+{
+    static enum{
+        START = 0,
+        CHECK,
+    }s_tState = START;
+	static check_str_t s_tApple;
+    if((NULL == ptQueue) && (NULL == bIsRequestDrop)){
+        return fsm_rt_err;
+    }
+	switch(s_tState){
+        case START:
+            init_check_string(&s_tApple,"apple");
+            s_tState = CHECK;
+		break;
+        case CHECK:
+            if(fsm_rt_cpl == check_string(&s_tApple,bIsRequestDrop)){
+                CHECK_APPLE_TASK_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+        break;
+    }
+}
+
+#define CHECK_APPLE_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+static fsm_rt_t check_orange(byte_queue_t *ptQueue, bool *bIsRequestDrop)
+{
+    static enum{
+        START = 0,
+        CHECK,
+    }s_tState = START;
+    static check_str_t s_tOrange;
+	if((NULL == ptQueue) && (NULL == bIsRequestDrop)){
+        return fsm_rt_err;
+	}
+	switch(s_tState){
+        case START:
+            init_check_string(&s_tOrange,"orange");
+            s_tState = CHECK;
+        break;
+        case CHECK:
+            if(fsm_rt_cpl == check_string(&s_tOrange,bIsRequestDrop)){
+                CHECK_APPLE_TASK_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+        break;
+    }
+}  */
+
+
+typedef struct _msg_t msg_t;
+typedef fsm_rt_t MSG_HANDLER(msg_t *ptMSG);
+struct _msg_t {
+    uint8_t chMSG[17];
+    MSG_HANDLER *fnHandler;
+};
+const msg_t *search_msg_map();
+static fsm_rt_t msg_orange_handler(msg_t *ptMSG);
+static fsm_rt_t msg_hello_handler(msg_t *ptMSG);
+static fsm_rt_t msg_apple_handler(msg_t *ptMSG);
+
+const static msg_t c_tMSGMap[] = {
+	{"apple", &msg_apple_handler},
+	{"orange", &msg_orange_handler},
+	{"hello", &msg_hello_handler},
+};
+
+#define ORANGE_HANDER_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+static fsm_rt_t msg_orange_handler(msg_t *ptMSG)
+{
+    static enum{
+        START = 0,
+        CHECK,
+    }s_tState = START;
+    if(NULL == ptMSG){
+        return fsm_rt_err;
+    }
+    switch(s_tState){
+        case START:
+            s_tState = CHECK;
+            break;
+        case CHECK:
+            SET_EVENT(&s_tOrangeEvent);
+            ORANGE_HANDER_TASK_RESET_FSM();
+            return fsm_rt_cpl;        
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define APPLE_HANDER_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+static fsm_rt_t msg_apple_handler(msg_t *ptMSG)
+{
+    static enum{
+        START = 0,
+        CHECK,
+    }s_tState = START;
+    if(NULL == ptMSG){
+        return fsm_rt_err;
+    }
+    switch(s_tState){
+        case START:
+            s_tState = CHECK;
+            break;
+        case CHECK:
+            SET_EVENT(&s_tAppleEvent);
+            APPLE_HANDER_TASK_RESET_FSM();
+            return fsm_rt_cpl;        
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+
+#define HELLO_HANDER_TASK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+static fsm_rt_t msg_hello_handler(msg_t *ptMSG)
+{
+    static enum{
+        START = 0,
+        CHECK,
+    }s_tState = START;
+    if(NULL == ptMSG){
+        return fsm_rt_err;
+    }    
+    switch(s_tState){
+        case START:
+            s_tState = CHECK;
+            break;
+        case CHECK:
+            SET_EVENT(&s_tWorldEvent);
+            HELLO_HANDER_TASK_RESET_FSM();
+            return fsm_rt_cpl;
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+#define UBOUND(__ADD)     (sizeof(__ADD)/sizeof(__ADD[0]))
+	
+
+#define SEARCH_MSG_MAP_RESET()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+const msg_t *search_msg_map(void)
+{
+    static enum{
+        START = 0,
+        END_LOOP,
+        NEED_DEQUQUE,
+        BODY_START,
+		BODY_END,
+    }s_tState = START;
+    static uint16_t s_hwLoop;
+    static bool s_bIsRequestDropTemp;
+    static bool s_bIsRequestDrop;
+    uint8_t chByte; 
+    static check_str_t s_ptItem;
+    switch(s_tState){
+        case START:
+            s_tState = END_LOOP;
+            s_hwLoop = 0;
+            s_bIsRequestDropTemp = true;
+       //     break;
+        case END_LOOP:
+            if(s_hwLoop >= UBOUND(c_tMSGMap)){
+                s_tState = NEED_DEQUQUE;
+            }else{
+                s_tState = BODY_START;
+            }
+            break;
+        case NEED_DEQUQUE:
+            if(s_bIsRequestDropTemp){
+                DEQUEUE_BYTE(&s_tFIFOin,&chByte);
+            }
+            SEARCH_MSG_MAP_RESET();
+	    break;
+        case BODY_START:
+            if(!init_check_string(&s_ptItem,(uint8_t *)c_tMSGMap[s_hwLoop].chMSG)){
+                break;
+			}
+            RESET_PEEK_BYTE(&s_tFIFOin);  
+			if(fsm_rt_cpl == check_string(&s_ptItem,&s_bIsRequestDrop)){
+                GET_ALL_PEEK_BYTE(&s_tFIFOin);
+                s_tState = BODY_END;
+                return (&c_tMSGMap[s_hwLoop]);
+			}
+            s_bIsRequestDropTemp &= s_bIsRequestDrop;
+            s_tState = BODY_END;
+	    break;
+	    case BODY_END:
+	        s_hwLoop++;
+            s_tState = END_LOOP;
+	    break;
+    }
+    return NULL;
+}
+
+#define TASK_CHECK_USE_PEEK_RESET_FSM()      \
+    do {\
+        s_tState = START;\
+    } while(0);
+fsm_rt_t task_check_use_peek(void)
+{
+    static enum{
+        START = 0,
+		SEARCH,
+        PRINT,
+    }s_tState = START;
+	static msg_t *s_tMsg;
+	switch(s_tState){
+        case START:
+        s_tState = SEARCH;
+            break;
+	    case SEARCH:
+            s_tMsg = search_msg_map();
+            if(NULL != s_tMsg){
+                s_tState = PRINT;
+            }    
+            break;
+        case PRINT:
+            if(fsm_rt_cpl == (*(s_tMsg->fnHandler))(s_tMsg)){
+                TASK_CHECK_USE_PEEK_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+    return fsm_rt_on_going;
+}
+
+
+int main(void)
+{
+    system_init();
+	INIT_BYTE_QUEUE(&s_tFIFOin,s_chInBuffer,sizeof(s_chInBuffer));
+	INIT_BYTE_QUEUE(&s_tFIFOout,s_chOutBuffer,sizeof(s_chOutBuffer));
+    while(1){
+        breath_led();
+        task_a();
+        task_b();
+        task_c();
+        serial_in_task();
+        serial_out_task();
+        task_check_use_peek();
+    }
+}
+
+

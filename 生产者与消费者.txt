@@ -1,0 +1,279 @@
+/**
+  ******************************************************************************
+  * @file    main.c
+  * @author  
+  * @version V1.0
+  * @date    2016-xx-xx
+  * @brief   用3.5.0版本库建的工程模板
+  ******************************************************************************
+  * @attention
+  *
+  *
+  ******************************************************************************
+  */
+  
+#include "stm32f10x.h"
+#include "system.h"
+#include "stdlib.h"
+#include "critical.h"
+#include "event.h"
+
+static event_t s_tEvent;
+
+//static fsm_rt_t test4a(void);
+static fsm_rt_t printf(void);
+static fsm_rt_t check(void);
+
+void system_init(void)
+{
+    uart_init();
+    Key_gpio_init();
+    led_gpio_init();
+    INIT_EVENT_(&s_tEvent,false,true);
+}
+
+static void set_led_gradation(uint16_t hwLevel)
+{
+    static uint16_t s_hwCounter = 0;
+    
+    if (hwLevel >= s_hwCounter) {
+        LED1_ON();
+    } else {
+        LED1_OFF();
+    }
+    s_hwCounter++;
+    s_hwCounter &= TOP;
+}
+
+static void breath_led(void)   //呼吸灯
+{
+    static uint16_t s_hwCounter = 0;
+    static int16_t s_nGray = (TOP >> 1);
+    s_hwCounter++;
+    if (!(s_hwCounter & (_BV(10)-1))) {
+        s_nGray++; 
+        if (s_nGray == TOP) {
+            s_nGray = 0;
+        }
+    }
+    set_led_gradation(ABS(s_nGray - (TOP >> 1)));
+}
+
+
+
+#define PRINT_RESET_FSM()  \
+    do{  \
+        state = PRINT_START;   \
+    }while(0)		
+	
+static fsm_rt_t printf(void)   //????
+{
+    static enum STATE_RUN{
+        PRINT_START = 0,
+        RUN_H,
+        RUN_E,
+        RUN_L,
+        RUN_LL,
+        RUN_O,
+        RUN_R,
+        RUN_N,
+    }state = PRINT_START;		
+    switch( state ){
+    case PRINT_START:
+//        if(WAIT_EVENT(&s_tEvent)){
+         state = RUN_H;
+//            RESET_EVENT(&s_tEvent);
+//        }	 
+        break;
+    case RUN_H:
+        if(serial_out('h')){
+            state = RUN_E;
+        }
+        break;	
+    case RUN_E:		
+        if(serial_out('e')){
+            state = RUN_L;
+        }
+        break;
+    case RUN_L:
+        if(serial_out('l')){
+            state = RUN_LL;
+        }
+        break;
+    case RUN_LL:	
+        if(serial_out('l')){
+            state = RUN_O;
+        }
+        break;
+    case RUN_O:	
+        if(serial_out('o')){
+            state = RUN_R;
+        }
+        break;
+    case RUN_R:	
+        if(serial_out('\r')){
+            state = RUN_N;
+        }
+        break;
+    case RUN_N:
+        if(serial_out('\n')){
+            PRINT_RESET_FSM();
+            return fsm_rt_cpl;
+        }	
+	}
+    return fsm_rt_on_going;
+}
+
+#define CHECKING_RESET_FSM() do {s_tState = 0;}while(0)
+static fsm_rt_t checking(void)
+{
+    static enum STATE_RUN{
+        CHECKING_START = 0,
+        CHECKING_FINSH,
+    }s_tState = CHECKING_START;
+    switch(s_tState){
+        case CHECKING_START:
+            s_tState = CHECKING_FINSH;
+            break;
+        case CHECKING_FINSH:
+            if(fsm_rt_cpl == check()){
+                SET_EVENT(&s_tEvent);
+                CHECKING_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+            break;
+    }
+}
+
+#define PRINTFING_RESET_FSM() do {s_tState = 0;}while(0)
+static fsm_rt_t printfing(void)
+{
+    static enum STATE_RUN{
+        PRINTFING_START = 0,
+        PRINTFING_CHECK,
+        PRINTFING_FINSH,
+    }s_tState = PRINTFING_START; 
+    switch(s_tState){
+        case PRINTFING_START:
+            s_tState = PRINTFING_CHECK;
+            break;
+        case PRINTFING_CHECK:
+            if(WAIT_EVENT(&s_tEvent)){
+                s_tState = PRINTFING_FINSH;
+                RESET_EVENT(&s_tEvent);
+            }
+            break;
+        case PRINTFING_FINSH:
+            if(fsm_rt_cpl == printf()){
+                PRINTFING_RESET_FSM();
+                return fsm_rt_cpl;
+            }
+    }
+}
+
+//#define TEST4A_RESET_FSM() do {s_tState = 0;}while(0)
+//static fsm_rt_t test4a(void)
+//{
+//    static enum{
+//        TEST4A_START = 0,
+//        TEST4A_CHECK,
+//        TEST4A_PRINT
+//    }s_tState = TEST4A_START;
+//    switch(s_tState){
+//        case  TEST4A_START:
+//            s_tState = TEST4A_CHECK;
+//            break;
+//        case  TEST4A_CHECK:
+//            if(fsm_rt_cpl == check()){
+//                s_tState = TEST4A_PRINT;
+//            }
+//            break;
+//        case TEST4A_PRINT:
+//            if(fsm_rt_cpl == printf()){
+//                TEST4A_RESET_FSM();
+//                return fsm_rt_cpl;
+//            }
+//            break;
+//    }
+//    return fsm_rt_on_going;
+//}
+
+#define CHECK_RESET_FSM() do {s_tState = 0;}while(0)
+static fsm_rt_t check(void)
+{
+    static enum STATE_RUN{
+        CHECK_START = 0,
+        CHECK_w,
+        CHECK_o,
+        CHECK_r,
+        CHECK_l,
+        CHECK_d,
+    }s_tState = CHECK_START;
+    uint8_t chVar;
+    switch(s_tState){
+        case CHECK_START:
+            s_tState = CHECK_w;
+            break;
+        case CHECK_w:
+            if(serial_in(&chVar)){
+                if(chVar == 'w'){
+                    s_tState = CHECK_o;
+                }else{
+                    s_tState = CHECK_START;
+                }
+            }
+            break;
+        case CHECK_o:
+            if(serial_in(&chVar)){
+                if(chVar == 'o'){
+                    s_tState = CHECK_r;
+                }else{
+                    s_tState = CHECK_START;
+                }
+            }
+            break;
+        case CHECK_r:
+            if(serial_in(&chVar)){
+                if(chVar == 'r'){
+                    s_tState = CHECK_l;
+                }else{
+                    s_tState = CHECK_START;
+                }
+            }
+            break;
+        case CHECK_l:
+            if(serial_in(&chVar)){
+                if(chVar == 'l'){
+                    s_tState = CHECK_d;
+                }else{
+                    s_tState = CHECK_START;
+                }
+            }
+            break;
+        case CHECK_d:
+            if(serial_in(&chVar)){
+                if(chVar == 'd'){
+                    CHECK_RESET_FSM();
+                    return fsm_rt_cpl;
+                }else{
+                    s_tState = CHECK_START;
+                }
+            }
+            break;    
+    }
+    return fsm_rt_on_going;
+}
+
+int main(void)
+{
+    system_init();
+    while(1){
+        breath_led();
+        printfing();
+        checking();
+//        check();
+//        printf();          
+    }
+}
+/*********************************************END OF FILE**********************/
+
